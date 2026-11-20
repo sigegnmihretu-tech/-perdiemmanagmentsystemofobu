@@ -224,7 +224,8 @@ export async function ensureBootstrappedAdminProfile(
 }
 
 export async function claimInvitationIfExists(
-  firebaseUser: FirebaseUser
+  firebaseUser: FirebaseUser,
+  hasExistingStaffDoc = false
 ): Promise<StoredUserRecord | null> {
   const email = (firebaseUser.email || '').trim().toLowerCase();
   if (!email || !firebaseUser.emailVerified) return null;
@@ -242,38 +243,68 @@ export async function claimInvitationIfExists(
     const staffRef = doc(db, 'staff_accounts', uid);
     const roleCollection = invite.role === 'ADMINISTRATOR' ? 'admins' : 'finance_officers';
     const roleGrantRef = doc(db, roleCollection, uid);
+    const existingGrantSnap = await getDoc(roleGrantRef);
 
     const avatar = safeAvatarUrl(firebaseUser.photoURL);
-    const staffPayload: Record<string, unknown> = {
-      uid,
-      name: trimMax(invite.name || firebaseUser.displayName || 'OBU Officer', 120),
-      email: trimMax(email, 160),
-      employeeId: normalizeEmployeeId(invite.employeeId),
-      phone: trimMax(invite.phone || '+251 911 000 000', 32),
-      department: trimMax(invite.department || 'Oda Bultum University', 140),
-      jobPosition: trimMax(invite.jobPosition || 'Authorized Officer', 120),
-      staffTier: invite.role === 'ADMINISTRATOR' ? 'SENIOR_ACADEMIC' : 'ADMIN_SUPPORT',
-      role: invite.role,
-      accountStatus: 'ACTIVE',
-      authorizedBy: trimMax(invite.authorizedBy || 'System Administrator', 120),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    if (invite.passwordHash) {
-      staffPayload.passwordHash = trimMax(invite.passwordHash, 128);
-    }
-    if (avatar) {
-      staffPayload.avatar = avatar;
-    }
+    const staffTier: StaffTier =
+      invite.role === 'ADMINISTRATOR' ? 'SENIOR_ACADEMIC' : 'ADMIN_SUPPORT';
 
     const batch = writeBatch(db);
-    batch.set(staffRef, staffPayload);
-    batch.set(roleGrantRef, {
-      uid,
-      email: trimMax(email, 160),
-      grantedBy: trimMax(invite.authorizedBy || 'System Administrator', 120),
-      createdAt: serverTimestamp(),
-    });
+
+    if (!hasExistingStaffDoc) {
+      const staffPayload: Record<string, unknown> = {
+        uid,
+        name: trimMax(invite.name || firebaseUser.displayName || 'OBU Officer', 120),
+        email: trimMax(email, 160),
+        employeeId: normalizeEmployeeId(invite.employeeId),
+        phone: trimMax(invite.phone || '+251 911 000 000', 32),
+        department: trimMax(invite.department || 'Oda Bultum University', 140),
+        jobPosition: trimMax(invite.jobPosition || 'Authorized Officer', 120),
+        staffTier,
+        role: invite.role,
+        accountStatus: 'ACTIVE',
+        authorizedBy: trimMax(invite.authorizedBy || 'System Administrator', 120),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (invite.passwordHash) {
+        staffPayload.passwordHash = trimMax(invite.passwordHash, 128);
+      }
+      if (avatar) {
+        staffPayload.avatar = avatar;
+      }
+      batch.set(staffRef, staffPayload);
+    } else {
+      const updatePayload: Record<string, unknown> = {
+        name: trimMax(invite.name || firebaseUser.displayName || 'OBU Officer', 120),
+        employeeId: normalizeEmployeeId(invite.employeeId),
+        phone: trimMax(invite.phone || '+251 911 000 000', 32),
+        department: trimMax(invite.department || 'Oda Bultum University', 140),
+        jobPosition: trimMax(invite.jobPosition || 'Authorized Officer', 120),
+        staffTier,
+        role: invite.role,
+        accountStatus: 'ACTIVE',
+        authorizedBy: trimMax(invite.authorizedBy || 'System Administrator', 120),
+        updatedAt: serverTimestamp(),
+      };
+      if (invite.passwordHash) {
+        updatePayload.passwordHash = trimMax(invite.passwordHash, 128);
+      }
+      if (avatar) {
+        updatePayload.avatar = avatar;
+      }
+      batch.update(staffRef, updatePayload);
+    }
+
+    if (!existingGrantSnap.exists()) {
+      batch.set(roleGrantRef, {
+        uid,
+        email: trimMax(email, 160),
+        grantedBy: trimMax(invite.authorizedBy || 'System Administrator', 120),
+        createdAt: serverTimestamp(),
+      });
+    }
+
     batch.update(inviteRef, {
       status: 'CLAIMED',
       updatedAt: serverTimestamp(),
@@ -284,6 +315,39 @@ export async function claimInvitationIfExists(
     return createdSnap.exists() ? mapStaffDocToRecord(createdSnap.id, createdSnap.data()) : null;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, invitePath);
+  }
+}
+
+export async function ensureRoleGrantForActiveUser(
+  firebaseUser: FirebaseUser,
+  record: StoredUserRecord
+): Promise<void> {
+  if (
+    !firebaseUser.emailVerified ||
+    !firebaseUser.email ||
+    record.accountStatus !== 'ACTIVE' ||
+    (record.role !== 'FINANCE' && record.role !== 'ADMINISTRATOR')
+  ) {
+    return;
+  }
+
+  const uid = firebaseUser.uid;
+  const roleCollection = record.role === 'ADMINISTRATOR' ? 'admins' : 'finance_officers';
+  const rolePath = `${roleCollection}/${uid}`;
+
+  try {
+    const roleGrantRef = doc(db, roleCollection, uid);
+    const snap = await getDoc(roleGrantRef);
+    if (!snap.exists()) {
+      await setDoc(roleGrantRef, {
+        uid,
+        email: trimMax(firebaseUser.email.trim().toLowerCase(), 160),
+        grantedBy: trimMax(record.authorizedBy || 'System Administrator', 120),
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, rolePath);
   }
 }
 
@@ -540,12 +604,19 @@ export async function processCloudPayment(
   financeUser: User,
   paymentData: Partial<PaymentDetails>,
   defaultAmount: number
-): Promise<string> {
+): Promise<PaymentDetails> {
   const path = `travel_requests/${requestId}`;
+  const rawVoucher = (paymentData.voucherNumber || '').trim();
   const voucherNumber = trimMax(
-    paymentData.voucherNumber || `OBU-FIN-PV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+    rawVoucher.length >= 4
+      ? rawVoucher
+      : `OBU-FIN-PV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
     60
   );
+  const rawRef = (paymentData.referenceNumber || '').trim();
+  const referenceNumber = trimMax(rawRef.length >= 2 ? rawRef : 'CBE-FT-882910', 80);
+  const rawProcessor = (paymentData.processedBy || `${financeUser.name} (Finance Officer)`).trim();
+  const processedBy = trimMax(rawProcessor.length >= 2 ? rawProcessor : 'OBU Finance Officer', 140);
   const processedAt = trimMax(
     paymentData.processedAt ||
       new Date().toLocaleDateString('en-US', {
@@ -557,26 +628,28 @@ export async function processCloudPayment(
       }),
     60
   );
+  const paymentMethod = paymentData.paymentMethod || 'CBE_BANK_TRANSFER';
+  const rawAmount = Number(paymentData.disbursedAmount ?? defaultAmount);
+  const disbursedAmount = Number.isFinite(rawAmount) && rawAmount >= 0 ? rawAmount : 0;
+
+  const paymentPayload: PaymentDetails = {
+    voucherNumber,
+    processedBy,
+    processedAt,
+    paymentMethod,
+    referenceNumber,
+    disbursedAmount,
+    currency: 'ETB',
+    paymentStatus: 'PAID',
+  };
 
   try {
     await updateDoc(doc(db, 'travel_requests', requestId), {
       status: 'COMPLETED',
-      payment: {
-        voucherNumber,
-        processedBy: trimMax(
-          paymentData.processedBy || `${financeUser.name} (Finance Officer)`,
-          140
-        ),
-        processedAt,
-        paymentMethod: paymentData.paymentMethod || 'CBE_BANK_TRANSFER',
-        referenceNumber: trimMax(paymentData.referenceNumber || 'CBE-FT-882910', 80),
-        disbursedAmount: Number(paymentData.disbursedAmount ?? defaultAmount),
-        currency: 'ETB',
-        paymentStatus: 'PAID',
-      },
+      payment: paymentPayload,
       updatedAt: serverTimestamp(),
     });
-    return voucherNumber;
+    return paymentPayload;
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }

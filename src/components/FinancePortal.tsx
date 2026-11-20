@@ -2,22 +2,19 @@ import React, { useState } from 'react';
 import { User, TravelRequest, PaymentDetails } from '../types/perdiem';
 import { ObuCrest } from './ObuCrest';
 import { 
-  DollarSign, 
   CreditCard, 
   FileText, 
   CheckCircle2, 
   Clock, 
-  Building, 
-  Smartphone, 
   Receipt, 
-  ExternalLink,
-  MapPin
+  MapPin,
+  AlertCircle
 } from 'lucide-react';
 
 interface FinancePortalProps {
   currentUser: User;
   requests: TravelRequest[];
-  onProcessPayment: (requestId: string, paymentData: Partial<PaymentDetails>) => void;
+  onProcessPayment: (requestId: string, paymentData: Partial<PaymentDetails>) => Promise<TravelRequest | null>;
   onViewVoucher: (req: TravelRequest) => void;
 }
 
@@ -31,38 +28,75 @@ export const FinancePortal: React.FC<FinancePortalProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<'CBE_BANK_TRANSFER' | 'TELEBIRR' | 'CHEQUE' | 'CASH'>('CBE_BANK_TRANSFER');
   const [referenceNumber, setReferenceNumber] = useState('CBE-FT-94817290');
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   const pendingPayments = requests.filter(r => r.status === 'APPROVED_BY_ADMIN');
   const paidClaims = requests.filter(r => r.status === 'COMPLETED' || r.status === 'PAYMENT_PROCESSED');
 
   const totalDisbursed = paidClaims.reduce((acc, r) => acc + r.breakdown.totalPerDiem, 0);
-  const pendingAmount = pendingPayments.reduce((acc, r) => acc + r.breakdown.totalPerDiem, 0);
 
   const openPaymentModal = (req: TravelRequest) => {
     setSelectedReq(req);
+    setPaymentError(null);
     setReferenceNumber(`CBE-FT-${Math.floor(10000000 + Math.random() * 90000000)}`);
     setIsPaymentModalOpen(true);
   };
 
-  const handleConfirmPayment = (e: React.FormEvent) => {
+  const handleConfirmPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedReq) return;
+    if (!selectedReq || isProcessing) return;
+
+    const cleanRef = referenceNumber.trim();
+    if (cleanRef.length < 2) {
+      setPaymentError('Please enter a valid transaction, cheque, or voucher reference number (at least 2 characters).');
+      return;
+    }
 
     const voucherNumber = `OBU-FIN-PV-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    setPaymentError(null);
+    setIsProcessing(true);
 
-    onProcessPayment(selectedReq.id, {
-      voucherNumber,
-      processedBy: `${currentUser.name} (Finance Officer)`,
-      processedAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      paymentMethod,
-      referenceNumber,
-      disbursedAmount: selectedReq.breakdown.totalPerDiem,
-      currency: 'ETB',
-      paymentStatus: 'PAID',
-    });
+    try {
+      const issuedRequest = await onProcessPayment(selectedReq.id, {
+        voucherNumber,
+        processedBy: `${currentUser.name} (Finance Officer)`,
+        processedAt: new Date().toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        paymentMethod,
+        referenceNumber: cleanRef,
+        disbursedAmount: selectedReq.breakdown.totalPerDiem,
+        currency: 'ETB',
+        paymentStatus: 'PAID',
+      });
 
-    setIsPaymentModalOpen(false);
-    setSelectedReq(null);
+      setIsPaymentModalOpen(false);
+      setSelectedReq(null);
+      if (issuedRequest) {
+        onViewVoucher(issuedRequest);
+      }
+    } catch (err) {
+      const rawMsg = err instanceof Error ? err.message : 'Unable to process payment and issue voucher.';
+      let friendlyMsg = rawMsg;
+      try {
+        const parsed = JSON.parse(rawMsg);
+        if (parsed && typeof parsed.error === 'string') {
+          friendlyMsg = parsed.error.includes('Missing or insufficient permissions')
+            ? 'Cloud permission denied while issuing voucher. Please sign out and sign back in with Google on the Finance tab, then try again.'
+            : parsed.error;
+        }
+      } catch {
+        // Not JSON
+      }
+      setPaymentError(friendlyMsg);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -214,6 +248,16 @@ export const FinancePortal: React.FC<FinancePortalProps> = ({
             </div>
 
             <form onSubmit={handleConfirmPayment} className="p-6 space-y-4">
+              {paymentError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-lg bg-rose-50 border border-rose-300 text-xs text-rose-900 flex items-start gap-2"
+                >
+                  <AlertCircle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                  <span>{paymentError}</span>
+                </div>
+              )}
+
               <div className="bg-[#F4F6FA] p-3.5 rounded-lg border border-slate-200 text-xs space-y-1">
                 <div className="flex justify-between">
                   <span className="text-slate-600">Payee (Employee):</span>
@@ -264,17 +308,19 @@ export const FinancePortal: React.FC<FinancePortalProps> = ({
               <div className="pt-2 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isProcessing}
                   onClick={() => setIsPaymentModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-[#101B35] border border-slate-300 rounded-lg cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-[#101B35] border border-slate-300 rounded-lg cursor-pointer disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-[#101B35] hover:bg-[#1A2B52] rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer"
+                  disabled={isProcessing}
+                  className="px-5 py-2.5 text-xs font-bold text-white bg-[#101B35] hover:bg-[#1A2B52] rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
                 >
                   <CreditCard className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>Authorize &amp; Generate Voucher</span>
+                  <span>{isProcessing ? 'Processing & Issuing Voucher...' : 'Authorize & Generate Voucher'}</span>
                 </button>
               </div>
             </form>

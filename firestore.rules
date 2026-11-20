@@ -289,6 +289,18 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'phone', 'avatar', 'passwordHash', 'updatedAt'
             ]))
+          // Tier 3: Account owner claims an active Administrator-issued role invitation
+          || (isOwner(uid)
+            && incoming().email == existing().email
+            && incoming().email == request.auth.token.email
+            && hasActiveInvitation(request.auth.token.email)
+            && incoming().role == getInvitation(request.auth.token.email).role
+            && incoming().accountStatus == 'ACTIVE'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'employeeId', 'phone', 'department', 'jobPosition',
+              'staffTier', 'role', 'accountStatus', 'authorizedBy',
+              'passwordHash', 'avatar', 'updatedAt'
+            ]))
         );
 
       allow delete: if isVerified() && isValidId(uid) && isAdmin();
@@ -311,6 +323,11 @@ service cloud.firestore {
             && incoming().email == request.auth.token.email
             && hasActiveInvitation(request.auth.token.email)
             && getInvitation(request.auth.token.email).role == 'ADMINISTRATOR')
+          || (isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && exists(/databases/$(database)/documents/staff_accounts/$(uid))
+            && get(/databases/$(database)/documents/staff_accounts/$(uid)).data.role == 'ADMINISTRATOR'
+            && get(/databases/$(database)/documents/staff_accounts/$(uid)).data.accountStatus == 'ACTIVE')
           || isAdmin()
         );
 
@@ -340,6 +357,11 @@ service cloud.firestore {
             && incoming().email == request.auth.token.email
             && hasActiveInvitation(request.auth.token.email)
             && getInvitation(request.auth.token.email).role == 'FINANCE')
+          || (isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && exists(/databases/$(database)/documents/staff_accounts/$(uid))
+            && get(/databases/$(database)/documents/staff_accounts/$(uid)).data.role == 'FINANCE'
+            && get(/databases/$(database)/documents/staff_accounts/$(uid)).data.accountStatus == 'ACTIVE')
           || isAdmin()
         );
 

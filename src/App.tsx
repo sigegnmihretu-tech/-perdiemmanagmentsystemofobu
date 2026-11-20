@@ -30,6 +30,7 @@ import {
   authorizeCloudEmployee,
   claimInvitationIfExists,
   ensureBootstrappedAdminProfile,
+  ensureRoleGrantForActiveUser,
   getStaffAccountByUid,
   processCloudPayment,
   provisionCloudInvitation,
@@ -99,10 +100,12 @@ export default function App() {
           if (!record && fbUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL) {
             record = await ensureBootstrappedAdminProfile(fbUser);
           }
-          if (!record) {
-            record = await claimInvitationIfExists(fbUser);
+          const upgraded = await claimInvitationIfExists(fbUser, Boolean(record));
+          if (upgraded) {
+            record = upgraded;
           }
           if (record && record.accountStatus === 'ACTIVE') {
+            await ensureRoleGrantForActiveUser(fbUser, record);
             setCurrentUser(sanitizeUser(record));
           } else {
             clearAuthenticatedSession();
@@ -192,12 +195,20 @@ export default function App() {
       record = await ensureBootstrappedAdminProfile(fbUser);
     } else {
       record = await getStaffAccountByUid(fbUser.uid);
-      if (!record) {
-        record = await claimInvitationIfExists(fbUser);
+      const claimed = await claimInvitationIfExists(fbUser, Boolean(record));
+      if (claimed) {
+        record = claimed;
       }
     }
 
     if (!record) {
+      if (email === BOOTSTRAPPED_ADMIN_EMAIL && selectedPortal !== 'ADMINISTRATOR') {
+        return {
+          ok: false,
+          errorCode: 'ROLE_MISMATCH',
+          message: `This email (${email}) is configured as the University System Administrator account. Please click the "Administrator" tab above and sign in with Google.`,
+        };
+      }
       if (selectedPortal === 'EMPLOYEE') {
         return {
           ok: false,
@@ -273,6 +284,8 @@ export default function App() {
         message: `Access Denied: Your verified account (${record.employeeId}) holds ${actualLabel} privileges and cannot sign into the ${portalLabel} Portal. Switch to the ${actualLabel} tab.`,
       };
     }
+
+    await ensureRoleGrantForActiveUser(fbUser, record);
 
     const safeUser = sanitizeUser(record);
     saveAuthenticatedSession(safeUser, rememberMe);
@@ -441,20 +454,43 @@ export default function App() {
     showToast('Request rejected. Returned back to Employee with feedback.');
   };
 
-  // Finance -> Process Payment
+  // Finance -> Process Payment & Issue Voucher
   const handleProcessPayment = async (
     requestId: string,
     paymentData: Partial<PaymentDetails>
-  ) => {
-    if (!currentUser || currentUser.role !== 'FINANCE') return;
+  ): Promise<TravelRequest | null> => {
+    if (!currentUser || (currentUser.role !== 'FINANCE' && currentUser.role !== 'ADMINISTRATOR')) {
+      throw new Error('Only an authorized Finance Officer can process disbursements.');
+    }
     const targetReq = requests.find((r) => r.id === requestId);
-    const voucherNo = await processCloudPayment(
+    if (!targetReq) {
+      throw new Error('Selected travel claim was not found.');
+    }
+
+    if (firebaseUser) {
+      const record = await getStaffAccountByUid(firebaseUser.uid);
+      if (record) {
+        await ensureRoleGrantForActiveUser(firebaseUser, record);
+      }
+    }
+
+    const completedPayment = await processCloudPayment(
       requestId,
       currentUser,
       paymentData,
-      targetReq?.breakdown.totalPerDiem || 0
+      targetReq.breakdown.totalPerDiem || 0
     );
-    showToast(`Payment processed! Official Voucher ${voucherNo} created.`);
+
+    const updatedRequest: TravelRequest = {
+      ...targetReq,
+      status: 'COMPLETED',
+      payment: completedPayment,
+    };
+
+    setRequests((prev) => prev.map((r) => (r.id === requestId ? updatedRequest : r)));
+    setSelectedRequest(updatedRequest);
+    showToast(`Payment processed! Official Voucher ${completedPayment.voucherNumber} created.`);
+    return updatedRequest;
   };
 
   const handleViewVoucher = (req: TravelRequest) => {
