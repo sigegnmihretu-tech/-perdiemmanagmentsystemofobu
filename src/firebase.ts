@@ -66,6 +66,21 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function formatFirebaseAuthError(error: unknown, fallbackMessage: string): string {
+  const msg = error instanceof Error ? error.message : String(error || fallbackMessage);
+  if (msg.includes('auth/unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+    return `Domain "${host}" is not authorized for Google Sign-In yet. In Firebase Console (project: ${FIREBASE_PROJECT_ID}), go to Authentication → Settings → Authorized domains → Add domain and enter "${host}".`;
+  }
+  if (msg.includes('popup-closed')) {
+    return 'Google sign-in popup was closed before verification completed.';
+  }
+  if (msg.includes('popup-blocked')) {
+    return 'Browser blocked the Google sign-in popup. Please allow popups for this site and try again.';
+  }
+  return msg || fallbackMessage;
+}
+
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));

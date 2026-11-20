@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { signInWithPopup, User as FirebaseUser } from 'firebase/auth';
-import { auth, googleProvider } from '../firebase';
+import { auth, formatFirebaseAuthError, googleProvider } from '../firebase';
 import { StaffTier, StoredUserRecord } from '../types/perdiem';
 import { ObuCrest } from './ObuCrest';
 import {
@@ -101,12 +101,7 @@ export const RegisterPage: React.FC<RegisterPageProps> = ({
         setFullName(cred.user.displayName);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Google verification was cancelled.';
-      setServerError(
-        msg.includes('popup-closed')
-          ? 'Google sign-in popup was closed before verification completed.'
-          : msg
-      );
+      setServerError(formatFirebaseAuthError(err, 'Google verification was cancelled.'));
     } finally {
       setIsVerifyingGoogle(false);
     }
@@ -192,12 +187,7 @@ export const RegisterPage: React.FC<RegisterPageProps> = ({
 
       setCompletedRecord(result.record);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to complete cloud registration.';
-      setServerError(
-        msg.includes('popup-closed')
-          ? 'Google sign-in popup was closed. Please verify your Google account to submit registration.'
-          : msg
-      );
+      setServerError(formatFirebaseAuthError(err, 'Unable to complete cloud registration.'));
     } finally {
       setIsSubmitting(false);
     }

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { signInWithPopup, User as FirebaseUser } from 'firebase/auth';
-import { auth, googleProvider } from '../firebase';
+import { auth, formatFirebaseAuthError, googleProvider } from '../firebase';
 import { AuthPortalRole } from '../types/perdiem';
 import {
   loadRememberedIdentifier,
@@ -117,13 +117,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
       setRememberedIdentifier(cred.user.email, rememberMe);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to sign in with Google.';
       setErrorType('error');
-      setErrorMessage(
-        msg.includes('popup-closed')
-          ? 'Google sign-in popup was closed before sign-in finished.'
-          : msg
-      );
+      setErrorMessage(formatFirebaseAuthError(err, 'Unable to sign in with Google.'));
     } finally {
       setIsGoogleLoading(false);
     }
@@ -170,13 +165,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
       setRememberedIdentifier(identifier, rememberMe);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Authentication failed.';
       setErrorType('error');
-      setErrorMessage(
-        msg.includes('popup-closed')
-          ? 'Google verification popup was closed before verifying your account.'
-          : msg
-      );
+      setErrorMessage(formatFirebaseAuthError(err, 'Authentication failed.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -224,8 +214,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       setNewResetPassword('');
       setConfirmResetPassword('');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to reset password.';
-      setRecoveryError(msg);
+      setRecoveryError(formatFirebaseAuthError(err, 'Unable to reset password.'));
     } finally {
       setIsRecovering(false);
     }
@@ -299,6 +288,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               src="/assets/obu/campus-4.jpg"
               alt="Oda Bultum University Chiro Main Campus"
               className="w-full h-full object-cover"
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.dataset.fallbackApplied) {
+                  img.dataset.fallbackApplied = '1';
+                  img.src = '/assets/obu/obu-campus-hero.jpg';
+                } else {
+                  img.style.display = 'none';
+                }
+              }}
             />
             <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#101B35]/90 to-transparent px-4 py-2.5">
               <p className="text-[11px] font-semibold text-[#D4AF37]">
