@@ -1,0 +1,454 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------------------
+    // Global Default-Deny Catch-All Safety Net
+    // -------------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Primitives & Authentication Helpers
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isVerified() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailKey(val) {
+      return val is string
+        && val.size() >= 5
+        && val.size() <= 160
+        && val.matches('^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Bootstrapped primary System Administrator email (requires verified email token)
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'sigegnmihretu@gmail.com';
+    }
+
+    // Trusted RBAC role lookups (never derived from custom token claims)
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isFinance() {
+      return isVerified() && exists(/databases/$(database)/documents/finance_officers/$(request.auth.uid));
+    }
+
+    function hasActiveInvitation(email) {
+      return isValidEmailKey(email)
+        && exists(/databases/$(database)/documents/account_invitations/$(email))
+        && get(/databases/$(database)/documents/account_invitations/$(email)).data.status == 'ACTIVE';
+    }
+
+    function getInvitation(email) {
+      return get(/databases/$(database)/documents/account_invitations/$(email)).data;
+    }
+
+    // -------------------------------------------------------------------------
+    // Standalone Schema Validation Blueprints
+    // -------------------------------------------------------------------------
+    function isValidStaffAccount(data, targetUid) {
+      return data.keys().hasAll([
+          'uid', 'name', 'email', 'employeeId', 'phone',
+          'department', 'jobPosition', 'staffTier', 'role',
+          'accountStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'name', 'email', 'employeeId', 'phone',
+          'department', 'jobPosition', 'staffTier', 'role',
+          'accountStatus', 'passwordHash', 'authorizedBy',
+          'avatar', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == targetUid
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && isValidEmailKey(data.email)
+        && data.employeeId is string && data.employeeId.size() >= 3 && data.employeeId.size() <= 32
+        && data.employeeId.matches('^[a-zA-Z0-9\\-]+$')
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 32
+        && data.department is string && data.department.size() >= 2 && data.department.size() <= 140
+        && data.jobPosition is string && data.jobPosition.size() >= 2 && data.jobPosition.size() <= 120
+        && data.staffTier in ['SENIOR_ACADEMIC', 'LECTURER_RESEARCHER', 'ADMIN_SUPPORT']
+        && data.role in ['EMPLOYEE', 'ADMINISTRATOR', 'FINANCE']
+        && data.accountStatus in ['ACTIVE', 'PENDING_APPROVAL', 'REJECTED']
+        && (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128))
+        && (!('authorizedBy' in data) || (data.authorizedBy is string && data.authorizedBy.size() <= 120))
+        && (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 500))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoleGrant(data, targetUid) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt'])
+        && isValidId(data.uid)
+        && data.uid == targetUid
+        && isValidEmailKey(data.email)
+        && data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAccountInvitation(data, inviteEmail) {
+      return data.keys().hasAll([
+          'email', 'name', 'employeeId', 'phone', 'department',
+          'jobPosition', 'role', 'status', 'authorizedBy',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'email', 'name', 'employeeId', 'phone', 'department',
+          'jobPosition', 'role', 'passwordHash', 'status',
+          'authorizedBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidEmailKey(data.email)
+        && data.email == inviteEmail
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.employeeId is string && data.employeeId.size() >= 3 && data.employeeId.size() <= 32
+        && data.employeeId.matches('^[a-zA-Z0-9\\-]+$')
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 32
+        && data.department is string && data.department.size() >= 2 && data.department.size() <= 140
+        && data.jobPosition is string && data.jobPosition.size() >= 2 && data.jobPosition.size() <= 120
+        && data.role in ['ADMINISTRATOR', 'FINANCE']
+        && data.status in ['ACTIVE', 'CLAIMED', 'REVOKED']
+        && data.authorizedBy is string && data.authorizedBy.size() >= 2 && data.authorizedBy.size() <= 120
+        && (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBreakdown(b) {
+      return b is map
+        && b.keys().hasAll([
+          'days', 'dailyAllowanceRate', 'lodgingAllowanceRate',
+          'transportAllowance', 'incidentals', 'totalDaily',
+          'subtotalAllowance', 'destinationMultiplier', 'totalPerDiem', 'currency'
+        ])
+        && b.keys().hasOnly([
+          'days', 'dailyAllowanceRate', 'lodgingAllowanceRate',
+          'transportAllowance', 'incidentals', 'totalDaily',
+          'subtotalAllowance', 'destinationMultiplier', 'totalPerDiem', 'currency'
+        ])
+        && b.days is number && b.days >= 1 && b.days <= 365
+        && b.dailyAllowanceRate is number && b.dailyAllowanceRate >= 0
+        && b.lodgingAllowanceRate is number && b.lodgingAllowanceRate >= 0
+        && b.transportAllowance is number && b.transportAllowance >= 0
+        && b.incidentals is number && b.incidentals >= 0
+        && b.totalDaily is number && b.totalDaily >= 0
+        && b.subtotalAllowance is number && b.subtotalAllowance >= 0
+        && b.destinationMultiplier is number && b.destinationMultiplier > 0 && b.destinationMultiplier <= 5
+        && b.totalPerDiem is number && b.totalPerDiem >= 0
+        && b.currency is string && b.currency.size() >= 2 && b.currency.size() <= 10;
+    }
+
+    function isValidApproval(a) {
+      return a is map
+        && a.keys().hasAll(['reviewedBy', 'reviewedAt', 'decision', 'remarks'])
+        && a.keys().hasOnly(['reviewedBy', 'reviewedAt', 'decision', 'remarks'])
+        && a.reviewedBy is string && a.reviewedBy.size() >= 2 && a.reviewedBy.size() <= 140
+        && a.reviewedAt is string && a.reviewedAt.size() >= 2 && a.reviewedAt.size() <= 60
+        && a.decision in ['APPROVED', 'REJECTED']
+        && a.remarks is string && a.remarks.size() >= 1 && a.remarks.size() <= 600;
+    }
+
+    function isValidPayment(p) {
+      return p is map
+        && p.keys().hasAll([
+          'voucherNumber', 'processedBy', 'processedAt', 'paymentMethod',
+          'referenceNumber', 'disbursedAmount', 'currency', 'paymentStatus'
+        ])
+        && p.keys().hasOnly([
+          'voucherNumber', 'processedBy', 'processedAt', 'paymentMethod',
+          'referenceNumber', 'disbursedAmount', 'currency', 'paymentStatus'
+        ])
+        && p.voucherNumber is string && p.voucherNumber.size() >= 4 && p.voucherNumber.size() <= 60
+        && p.processedBy is string && p.processedBy.size() >= 2 && p.processedBy.size() <= 140
+        && p.processedAt is string && p.processedAt.size() >= 2 && p.processedAt.size() <= 60
+        && p.paymentMethod in ['CBE_BANK_TRANSFER', 'TELEBIRR', 'CHEQUE', 'CASH']
+        && p.referenceNumber is string && p.referenceNumber.size() >= 2 && p.referenceNumber.size() <= 80
+        && p.disbursedAmount is number && p.disbursedAmount >= 0
+        && p.currency is string && p.currency.size() >= 2 && p.currency.size() <= 10
+        && p.paymentStatus in ['PAID', 'PENDING'];
+    }
+
+    function isValidTravelRequest(data, requestId) {
+      return data.keys().hasAll([
+          'id', 'trackingCode', 'employeeUid', 'employeeId', 'employeeName',
+          'employeeRole', 'department', 'destination', 'destinationTier',
+          'purpose', 'departureDate', 'returnDate', 'daysCount',
+          'transportMode', 'breakdown', 'status', 'submittedAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'trackingCode', 'employeeUid', 'employeeId', 'employeeName',
+          'employeeRole', 'department', 'destination', 'destinationTier',
+          'purpose', 'departureDate', 'returnDate', 'daysCount',
+          'transportMode', 'breakdown', 'status', 'notes', 'submittedAt',
+          'approval', 'payment', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == requestId
+        && data.trackingCode is string && data.trackingCode.size() >= 4 && data.trackingCode.size() <= 40
+        && isValidId(data.employeeUid)
+        && data.employeeId is string && data.employeeId.size() >= 3 && data.employeeId.size() <= 40
+        && data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 120
+        && data.employeeRole is string && data.employeeRole.size() >= 2 && data.employeeRole.size() <= 120
+        && data.department is string && data.department.size() >= 2 && data.department.size() <= 140
+        && data.destination is string && data.destination.size() >= 2 && data.destination.size() <= 200
+        && data.destinationTier in ['CAPITAL', 'REGIONAL_CITY', 'REMOTE_WOREDA']
+        && data.purpose is string && data.purpose.size() >= 3 && data.purpose.size() <= 600
+        && data.departureDate is string && data.departureDate.size() >= 8 && data.departureDate.size() <= 20
+        && data.returnDate is string && data.returnDate.size() >= 8 && data.returnDate.size() <= 20
+        && data.daysCount is number && data.daysCount >= 1 && data.daysCount <= 365
+        && data.transportMode in ['UNIVERSITY_VEHICLE', 'PUBLIC_TRANSPORT', 'FLIGHT', 'PERSONAL_CAR']
+        && isValidBreakdown(data.breakdown)
+        && data.status in ['SUBMITTED_FOR_APPROVAL', 'APPROVED_BY_ADMIN', 'REJECTED_BY_ADMIN', 'COMPLETED']
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && data.submittedAt is string && data.submittedAt.size() >= 2 && data.submittedAt.size() <= 60
+        && (!('approval' in data) || isValidApproval(data.approval))
+        && (!('payment' in data) || isValidPayment(data.payment))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /staff_accounts/{uid} (PII Isolated to Owner or Admin)
+    // -------------------------------------------------------------------------
+    match /staff_accounts/{uid} {
+      allow get: if isVerified() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+
+      allow create: if isVerified()
+        && isValidId(uid)
+        && isValidStaffAccount(incoming(), uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Public Employee self-registration (forced EMPLOYEE + PENDING_APPROVAL)
+          (isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && incoming().role == 'EMPLOYEE'
+            && incoming().accountStatus == 'PENDING_APPROVAL')
+          // Claiming an active Administrator-issued invitation
+          || (isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && hasActiveInvitation(request.auth.token.email)
+            && incoming().role == getInvitation(request.auth.token.email).role
+            && incoming().accountStatus == 'ACTIVE')
+          // Bootstrapped primary Administrator self-initialization
+          || (isBootstrappedAdmin()
+            && isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && incoming().role == 'ADMINISTRATOR'
+            && incoming().accountStatus == 'ACTIVE')
+          // Verified Administrator provisioning or directory seeding
+          || isAdmin()
+        );
+
+      allow update: if isVerified()
+        && isValidId(uid)
+        && isValidStaffAccount(incoming(), uid)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Tier 1: System Administrator authorizes/declines registrations & manages accounts
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'employeeId', 'phone', 'department', 'jobPosition',
+            'staffTier', 'role', 'accountStatus', 'authorizedBy',
+            'passwordHash', 'avatar', 'updatedAt'
+          ]))
+          // Tier 2: Account owner updates safe profile/credential fields only (never role or accountStatus)
+          || (isOwner(uid)
+            && incoming().role == existing().role
+            && incoming().accountStatus == existing().accountStatus
+            && incoming().email == existing().email
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'phone', 'avatar', 'passwordHash', 'updatedAt'
+            ]))
+        );
+
+      allow delete: if isVerified() && isValidId(uid) && isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /admins/{uid} (Trusted System Administrator Role Grants)
+    // -------------------------------------------------------------------------
+    match /admins/{uid} {
+      allow get: if isVerified() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+
+      allow create: if isVerified()
+        && isValidId(uid)
+        && isValidRoleGrant(incoming(), uid)
+        && incoming().createdAt == request.time
+        && (
+          (isBootstrappedAdmin() && isOwner(uid) && incoming().email == request.auth.token.email)
+          || (isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && hasActiveInvitation(request.auth.token.email)
+            && getInvitation(request.auth.token.email).role == 'ADMINISTRATOR')
+          || isAdmin()
+        );
+
+      allow update: if isVerified()
+        && isValidId(uid)
+        && isValidRoleGrant(incoming(), uid)
+        && isAdmin()
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt;
+
+      allow delete: if isVerified() && isValidId(uid) && isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /finance_officers/{uid} (Trusted Finance Directorate Role Grants)
+    // -------------------------------------------------------------------------
+    match /finance_officers/{uid} {
+      allow get: if isVerified() && isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isVerified() && (existing().uid == request.auth.uid || isAdmin());
+
+      allow create: if isVerified()
+        && isValidId(uid)
+        && isValidRoleGrant(incoming(), uid)
+        && incoming().createdAt == request.time
+        && (
+          (isOwner(uid)
+            && incoming().email == request.auth.token.email
+            && hasActiveInvitation(request.auth.token.email)
+            && getInvitation(request.auth.token.email).role == 'FINANCE')
+          || isAdmin()
+        );
+
+      allow update: if isVerified()
+        && isValidId(uid)
+        && isValidRoleGrant(incoming(), uid)
+        && isAdmin()
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt;
+
+      allow delete: if isVerified() && isValidId(uid) && isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /account_invitations/{inviteEmail} (Admin Provisioning Queue)
+    // -------------------------------------------------------------------------
+    match /account_invitations/{inviteEmail} {
+      allow get: if isVerified()
+        && isValidEmailKey(inviteEmail)
+        && (isAdmin() || request.auth.token.email == inviteEmail);
+      allow list: if isVerified()
+        && (isAdmin() || existing().email == request.auth.token.email);
+
+      allow create: if isVerified()
+        && isValidEmailKey(inviteEmail)
+        && isValidAccountInvitation(incoming(), inviteEmail)
+        && isAdmin()
+        && incoming().status == 'ACTIVE'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerified()
+        && isValidEmailKey(inviteEmail)
+        && isValidAccountInvitation(incoming(), inviteEmail)
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'employeeId', 'phone', 'department', 'jobPosition',
+            'role', 'passwordHash', 'status', 'authorizedBy', 'updatedAt'
+          ]))
+          || (request.auth.token.email == inviteEmail
+            && existing().status == 'ACTIVE'
+            && incoming().status == 'CLAIMED'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+
+      allow delete: if isVerified() && isValidEmailKey(inviteEmail) && isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection: /travel_requests/{requestId} (Travel Claims & Payment Vouchers)
+    // -------------------------------------------------------------------------
+    match /travel_requests/{requestId} {
+      allow get: if isVerified()
+        && isValidId(requestId)
+        && (existing().employeeUid == request.auth.uid || isAdmin() || isFinance());
+
+      allow list: if isVerified()
+        && (existing().employeeUid == request.auth.uid || isAdmin() || isFinance());
+
+      allow create: if isVerified()
+        && isValidId(requestId)
+        && isValidTravelRequest(incoming(), requestId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Standard Employee claim creation: locked to own UID and initial submission state
+          (incoming().employeeUid == request.auth.uid
+            && incoming().status == 'SUBMITTED_FOR_APPROVAL'
+            && !('approval' in incoming())
+            && !('payment' in incoming()))
+          // System Administrator override (used for institutional data seeding)
+          || isAdmin()
+        );
+
+      allow update: if isVerified()
+        && isValidId(requestId)
+        && isValidTravelRequest(incoming(), requestId)
+        && incoming().id == existing().id
+        && incoming().trackingCode == existing().trackingCode
+        && incoming().employeeUid == existing().employeeUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        // Terminal state lock: COMPLETED vouchers are immutable except Admin override
+        && (existing().status != 'COMPLETED' || isAdmin())
+        && (
+          // Action: Administrator Review (Approve -> Finance or Reject -> Employee)
+          (isAdmin()
+            && existing().status == 'SUBMITTED_FOR_APPROVAL'
+            && incoming().status in ['APPROVED_BY_ADMIN', 'REJECTED_BY_ADMIN']
+            && ('approval' in incoming())
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approval', 'updatedAt']))
+          // Action: Finance Disbursement (Approved -> Completed Voucher)
+          || ((isFinance() || isAdmin())
+            && existing().status == 'APPROVED_BY_ADMIN'
+            && incoming().status == 'COMPLETED'
+            && ('payment' in incoming())
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'payment', 'updatedAt']))
+          // Action: Administrator Escape Hatch
+          || (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'destination', 'destinationTier', 'purpose', 'departureDate',
+            'returnDate', 'daysCount', 'transportMode', 'breakdown',
+            'status', 'notes', 'approval', 'payment', 'updatedAt'
+          ]))
+        );
+
+      allow delete: if isVerified() && isValidId(requestId) && isAdmin();
+    }
+  }
+}

@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --obu-navy: #101B35;
+    --obu-navy-light: #1A2B52;
+    --obu-gold: #D4AF37;
+    --obu-gold-dark: #B59024;
+    --obu-bg: #F4F6FA;
+    --obu-white: #FFFFFF;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: #F4F6FA;
+    color: #101B35;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2.font-serif, .font-display {
+    font-family: 'Playfair Display', Georgia, serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

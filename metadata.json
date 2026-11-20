@@ -1,0 +1,6 @@
+{
+  "name": "OBU Per Diem Management System",
+  "description": "Interactive workflow and Java Web Application generator for OBU Per Diem Management System, featuring visual lifecycle tracking, role-based workflows for Employee, Administrator, and Finance, per diem calculators, printable vouchers, and ready-to-run Apache NetBeans project export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
